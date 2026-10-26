@@ -1,0 +1,24 @@
+name: Test Python examples
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Compile examples
+        run: python -m compileall -q .
+      - name: Run mocked tests
+        run: python -m pytest -q

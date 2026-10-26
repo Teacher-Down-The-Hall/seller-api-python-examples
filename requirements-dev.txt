@@ -1,0 +1,2 @@
+# Runtime examples use only Python's standard library.
+pytest>=8,<10
