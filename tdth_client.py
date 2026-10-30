@@ -89,6 +89,45 @@ class TDTHSellerClient:
     def get_taxonomy(self) -> JsonObject:
         return self._request("GET", "/api/v1/seller/taxonomy")
 
+    def list_buyer_filters(self) -> JsonObject:
+        return self._request("GET", "/api/v1/seller/store/buyer-filters")
+
+    def create_buyer_filter(self, name: str) -> JsonObject:
+        return self._request("POST", "/api/v1/seller/store/buyer-filters", body={"name": name})
+
+    def update_buyer_filter(self, filter_id: str, name: str) -> JsonObject:
+        return self._request("PATCH", f"/api/v1/seller/store/buyer-filters/{filter_id}", body={"name": name})
+
+    def delete_buyer_filter(self, filter_id: str, *, confirm: bool = False) -> JsonObject:
+        return self._request("DELETE", f"/api/v1/seller/store/buyer-filters/{filter_id}", body={"confirm": confirm})
+
+    def order_buyer_filters(self, filter_ids: list[str]) -> JsonObject:
+        return self._request("PUT", "/api/v1/seller/store/buyer-filters/order", body={"filter_ids": filter_ids})
+
+    def get_product_buyer_filters(self, product_id: str) -> JsonObject:
+        return self._request("GET", f"/api/v1/seller/products/{product_id}/buyer-filters")
+
+    def set_product_buyer_filters(self, product_id: str, *, expected_revision: int, filter_ids: list[str]) -> JsonObject:
+        if expected_revision < 1:
+            raise ValueError("expected_revision must be at least 1.")
+        return self._request(
+            "PUT",
+            f"/api/v1/seller/products/{product_id}/buyer-filters",
+            body={"expected_revision": expected_revision, "filter_ids": filter_ids},
+        )
+
+    def get_product_related_resources(self, product_id: str) -> JsonObject:
+        return self._request("GET", f"/api/v1/seller/products/{product_id}/related-resources")
+
+    def set_product_related_resources(self, product_id: str, *, expected_revision: int, related_product_ids: list[str]) -> JsonObject:
+        if expected_revision < 1:
+            raise ValueError("expected_revision must be at least 1.")
+        return self._request(
+            "PUT",
+            f"/api/v1/seller/products/{product_id}/related-resources",
+            body={"expected_revision": expected_revision, "related_product_ids": related_product_ids},
+        )
+
     def create_draft(self, *, idempotency_key: str, fields: Mapping[str, Any]) -> JsonObject:
         if not idempotency_key.strip():
             raise ValueError("An explicit idempotency key is required for draft creation.")
@@ -171,6 +210,7 @@ class TDTHSellerClient:
         request = Request(url, data=data, headers=request_headers, method=method)
         try:
             with urlopen(request, timeout=self.timeout) as response:
+                status = getattr(response, "status", None)
                 raw = response.read()
         except HTTPError as exc:
             try:
@@ -184,6 +224,8 @@ class TDTHSellerClient:
             if isinstance(exc.reason, (socket.timeout, TimeoutError)):
                 raise TDTHTimeoutError() from None
             raise TDTHConnectionError() from None
+        if status == 204 and not raw:
+            return {}
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

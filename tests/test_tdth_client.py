@@ -19,8 +19,9 @@ from upload_fixtures import make_pdf, make_png
 
 
 class FakeResponse:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, *, status: int = 200):
         self.payload = payload
+        self.status = status
 
     def __enter__(self):
         return self
@@ -53,6 +54,53 @@ def test_taxonomy_response_is_parsed_without_extra_requests():
     with patch("tdth_client.urlopen", opener):
         assert TDTHSellerClient(token="token").get_taxonomy()["subjects"] == []
     assert opener.call_count == 1
+
+
+def test_merchandising_methods_use_public_routes_and_exact_request_bodies():
+    responses = [
+        FakeResponse({"items": []}),
+        FakeResponse({"id": "filter", "name": "Grade", "position": 0}),
+        FakeResponse({"id": "filter", "name": "Updated", "position": 0}),
+        FakeResponse({}, status=204),
+        FakeResponse({"items": []}),
+        FakeResponse({"product_id": "product", "filter_ids": [], "revision": 2}),
+        FakeResponse({"product_id": "product", "filter_ids": ["filter"], "revision": 3}),
+        FakeResponse({"product_id": "product", "related_products": [], "revision": 3}),
+        FakeResponse({"product_id": "product", "related_products": [{"id": "related", "position": 0}], "revision": 4}),
+    ]
+    opener = Mock(side_effect=responses)
+    with patch("tdth_client.urlopen", opener):
+        client = TDTHSellerClient(token="token")
+        client.list_buyer_filters()
+        client.create_buyer_filter("Grade")
+        client.update_buyer_filter("filter", "Updated")
+        assert client.delete_buyer_filter("filter", confirm=True) == {}
+        client.order_buyer_filters(["filter"])
+        client.get_product_buyer_filters("product")
+        client.set_product_buyer_filters("product", expected_revision=2, filter_ids=["filter"])
+        client.get_product_related_resources("product")
+        client.set_product_related_resources("product", expected_revision=3, related_product_ids=["related"])
+
+    requests = [call.args[0] for call in opener.call_args_list]
+    assert [request.method for request in requests] == ["GET", "POST", "PATCH", "DELETE", "PUT", "GET", "PUT", "GET", "PUT"]
+    assert json.loads(requests[1].data) == {"name": "Grade"}
+    assert json.loads(requests[3].data) == {"confirm": True}
+    assert json.loads(requests[4].data) == {"filter_ids": ["filter"]}
+    assert json.loads(requests[6].data) == {"expected_revision": 2, "filter_ids": ["filter"]}
+    assert json.loads(requests[8].data) == {"expected_revision": 3, "related_product_ids": ["related"]}
+    assert requests[0].full_url.endswith("/api/v1/seller/store/buyer-filters")
+    assert requests[5].full_url.endswith("/api/v1/seller/products/product/buyer-filters")
+    assert requests[7].full_url.endswith("/api/v1/seller/products/product/related-resources")
+
+
+def test_merchandising_writes_require_positive_revision_before_network():
+    opener = Mock()
+    client = TDTHSellerClient(token="token")
+    with patch("tdth_client.urlopen", opener), pytest.raises(ValueError):
+        client.set_product_buyer_filters("product", expected_revision=0, filter_ids=[])
+    with patch("tdth_client.urlopen", opener), pytest.raises(ValueError):
+        client.set_product_related_resources("product", expected_revision=0, related_product_ids=[])
+    opener.assert_not_called()
 
 
 def test_create_draft_requires_idempotency_and_sends_exact_contract():
@@ -177,3 +225,91 @@ def test_upload_examples_are_dry_run_without_network_requests(monkeypatch, capsy
             assert result == 0
     assert "DRY RUN" in capsys.readouterr().out
     opener.assert_not_called()
+
+
+def test_merchandising_write_example_is_dry_run_without_network_requests(monkeypatch, capsys):
+    import runpy
+
+    examples = Path(__file__).parents[1]
+    opener = Mock(side_effect=AssertionError("dry-run must not access the network"))
+    with patch("tdth_client.urlopen", opener):
+        monkeypatch.setattr(sys, "argv", ["10_product_merchandising.py", "product-id", "--filter-id", "filter-id"])
+        result = runpy.run_path(str(examples / "10_product_merchandising.py"), run_name="dry_run_merchandising")['main']()
+    assert result == 0
+    assert "DRY RUN" in capsys.readouterr().out
+    opener.assert_not_called()
+
+
+class BuyerFilterExampleClient:
+    def __init__(self, *, fail_create: bool = False):
+        self.calls = []
+        self.filter_ids = ["existing-filter"]
+        self.fail_create = fail_create
+
+    def list_buyer_filters(self):
+        self.calls.append(("list",))
+        return {"items": [{"id": item_id, "name": item_id, "position": position} for position, item_id in enumerate(self.filter_ids)]}
+
+    def create_buyer_filter(self, name):
+        self.calls.append(("create", name))
+        if self.fail_create:
+            raise RuntimeError("simulated create failure")
+        self.filter_ids.append("temporary-filter")
+        return {"id": "temporary-filter", "name": name, "position": len(self.filter_ids) - 1}
+
+    def update_buyer_filter(self, filter_id, name):
+        self.calls.append(("update", filter_id, name))
+        return {"id": filter_id, "name": name, "position": 0}
+
+    def order_buyer_filters(self, filter_ids):
+        self.calls.append(("order", filter_ids))
+        self.filter_ids = list(filter_ids)
+        return {"items": [{"id": item_id, "position": position} for position, item_id in enumerate(self.filter_ids)]}
+
+    def delete_buyer_filter(self, filter_id, *, confirm):
+        self.calls.append(("delete", filter_id, confirm))
+        self.filter_ids.remove(filter_id)
+        return {}
+
+
+def _run_buyer_filter_example(monkeypatch, fake_client, *arguments):
+    import runpy
+
+    examples = Path(__file__).parents[1]
+    monkeypatch.setattr(sys, "argv", ["09_buyer_filters.py", *arguments])
+    with patch("tdth_client.TDTHSellerClient.from_environment", return_value=fake_client):
+        return runpy.run_path(str(examples / "09_buyer_filters.py"), run_name="buyer_filter_example")['main']()
+
+
+def test_buyer_filter_example_default_invocation_reads_only(monkeypatch, capsys):
+    fake_client = BuyerFilterExampleClient()
+    assert _run_buyer_filter_example(monkeypatch, fake_client) == 0
+    assert fake_client.calls == [("list",)]
+    assert "completed" not in capsys.readouterr().out.lower()
+
+
+def test_buyer_filter_example_mutations_require_execute_and_confirm(monkeypatch):
+    fake_client = BuyerFilterExampleClient()
+    assert _run_buyer_filter_example(monkeypatch, fake_client, "--execute") == 2
+    assert fake_client.calls == []
+
+    fake_client = BuyerFilterExampleClient()
+    assert _run_buyer_filter_example(monkeypatch, fake_client, "--confirm") == 0
+    assert fake_client.calls == [("list",)]
+
+
+def test_buyer_filter_example_confirmed_flow_creates_updates_orders_and_deletes(monkeypatch, capsys):
+    fake_client = BuyerFilterExampleClient()
+    assert _run_buyer_filter_example(monkeypatch, fake_client, "--execute", "--confirm") == 0
+    operation_names = [call[0] for call in fake_client.calls]
+    assert operation_names == ["list", "create", "update", "list", "order", "delete", "list"]
+    assert fake_client.calls[-2] == ("delete", "temporary-filter", True)
+    assert "completed" in capsys.readouterr().out.lower()
+
+
+def test_buyer_filter_example_failure_is_nonzero_without_success_message(monkeypatch, capsys):
+    fake_client = BuyerFilterExampleClient(fail_create=True)
+    assert _run_buyer_filter_example(monkeypatch, fake_client, "--execute", "--confirm") == 1
+    output = capsys.readouterr()
+    assert "completed" not in output.out.lower()
+    assert "simulated create failure" in output.err

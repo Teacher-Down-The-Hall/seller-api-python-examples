@@ -29,10 +29,10 @@ prompt without echoing the token. The token is held in memory only.
 
 ## Run on macOS, Windows, or Linux
 
-Install Python 3.10 or newer. From the repository root:
+Install Python 3.10 or newer. From the standalone repository root:
 
 ```bash
-cd examples/seller-api
+cd seller-api-python-examples
 ```
 
 macOS/Linux:
@@ -89,6 +89,72 @@ Required permissions:
 | Create or update draft | `drafts:write` |
 | Product image upload | `media:write`, when external uploads are enabled |
 | Resource upload/status | `resources:write`, when external uploads and scanning are enabled |
+
+## Buyer filters and related resources
+
+The merchandising examples use the public Seller API directly. Read operations
+require `store:read` and/or `products:read`; mutations require `store:write`
+and/or `products:write`. Existing PATs are not granted new permissions
+automatically: create or reauthorize a token with only the scopes your
+integration needs.
+
+```bash
+python3 09_buyer_filters.py
+python3 10_product_merchandising.py PRODUCT_UUID
+```
+
+`09_buyer_filters.py` lists the connected store's filters by default. Its
+complete create, rename, reorder, delete, and fresh-read cleanup demonstration
+requires `--execute --confirm` and changes only the authenticated seller's
+store. The temporary filter is uniquely named and the original order is
+verified after deletion. If cleanup cannot be verified, the script exits
+nonzero and prints a warning.
+
+`10_product_merchandising.py` reads product buyer-filter assignments and
+ordered related resources by default. Assignment writes are explicit and
+replace the complete list:
+
+```bash
+python3 10_product_merchandising.py PRODUCT_UUID \
+  --filter-id FILTER_UUID \
+  --related-product-id RELATED_PRODUCT_UUID \
+  --execute --confirm
+
+python3 10_product_merchandising.py PRODUCT_UUID \
+  --clear-filters --clear-related \
+  --execute --confirm
+```
+
+Use a current `--expected-revision` only when you intentionally want a
+specific optimistic-concurrency check; otherwise the example reads the latest
+revision immediately before its writes. A successful buyer-filter update
+returns a new revision, which is used for the related-resource update. A `409`
+means the product changed elsewhere; retrieve the current state and decide
+whether to retry rather than overwriting another edit. These examples never
+publish, unpublish, create, or delete products.
+
+The API accepts an explicit empty list to clear assignments. Related resources
+must be distinct, cannot include the product itself, must belong to the same
+store, and are limited to four. The server rejects a fifth item and other
+invalid IDs with `422`. Published products may receive these merchandising
+updates without a publication-status change. Product and store ownership is
+always derived from the PAT, not from caller-supplied seller IDs.
+
+The direct endpoint contracts are:
+
+| Operation | Method and path | Scope |
+| --- | --- | --- |
+| List/create buyer filters | `GET/POST /api/v1/seller/store/buyer-filters` | `store:read` / `store:write` |
+| Rename/delete buyer filter | `PATCH/DELETE /api/v1/seller/store/buyer-filters/{filter_id}` | `store:write` |
+| Replace filter order | `PUT /api/v1/seller/store/buyer-filters/order` | `store:write` |
+| Get/set product filters | `GET/PUT /api/v1/seller/products/{product_id}/buyer-filters` | `products:read` / `products:write` |
+| Get/set related resources | `GET/PUT /api/v1/seller/products/{product_id}/related-resources` | `products:read` / `products:write` |
+
+The client does not automatically retry non-idempotent requests. `401` and
+`403` indicate authentication, ownership, or scope problems; `409` indicates a
+revision or state conflict; `422` indicates invalid IDs, duplicates, status,
+or the four-resource limit; and `429` indicates rate limiting. Respect the
+server's `Retry-After` guidance and never log the PAT.
 
 ## Draft examples
 
